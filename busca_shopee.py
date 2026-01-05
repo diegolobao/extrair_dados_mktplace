@@ -32,6 +32,11 @@ try:
     HAS_PYGETWIN = True
 except Exception:
     HAS_PYGETWIN = False
+try:
+    import requests
+    HAS_REQUESTS = True
+except Exception:
+    HAS_REQUESTS = False
 
 # Carrega variáveis de ambiente (.env)
 load_dotenv()
@@ -191,6 +196,157 @@ def navigate_url_pyautogui(url: str):
         time.sleep(random.uniform(0.4, 0.8))
     except Exception:
         pass
+
+
+def _sanitize_filename(name: str) -> str:
+    bad = '<>:"/\\|?*\n\r\t'
+    out = ''.join(c if c not in bad else '_' for c in name)
+    out = out.strip()
+    if not out:
+        out = 'pagina'
+    return out
+
+
+def save_current_page_html_pyautogui(filename: str):
+    """Abre o diálogo de salvar e grava o HTML da aba atual em filename.
+    filename deve ser um caminho absoluto com .html."""
+    import pyautogui
+    ok_focus = focus_chrome_window()
+    if not ok_focus:
+        print("Não consegui focar automaticamente a janela do Chrome. Tentarei mesmo assim.")
+    time.sleep(0.5 + random.uniform(0.2, 0.8))
+    pyautogui.hotkey('ctrl', 's')
+    time.sleep(random.uniform(0.6, 1.2))
+    to_paste = filename
+    if HAS_CLIPBOARD:
+        try:
+            clipboard.copy(to_paste)
+            time.sleep(random.uniform(0.2, 0.5))
+            pyautogui.hotkey('ctrl', 'v')
+        except Exception:
+            pyautogui.typewrite(to_paste, interval=random.uniform(0.02, 0.06))
+    else:
+        pyautogui.typewrite(to_paste, interval=random.uniform(0.02, 0.06))
+    time.sleep(random.uniform(0.2, 0.5))
+    pyautogui.press('enter')
+    # Alguns sistemas mostram confirmação (sobrescrever). Tenta confirmar.
+    time.sleep(random.uniform(0.6, 1.2))
+    try:
+        pyautogui.press('enter')
+    except Exception:
+        pass
+
+
+def save_current_page_html_via_clipboard(filename: str):
+    """Abre o 'view-source' da aba atual, copia todo o HTML para o clipboard e salva em arquivo.
+    Mais confiável do que o diálogo de 'Salvar como'. Fecha a aba de 'view-source' ao final."""
+    import pyautogui
+    try:
+        if not HAS_CLIPBOARD:
+            print("Clipboard não disponível. Voltando para salvar via diálogo.")
+            return save_current_page_html_pyautogui(filename)
+        ok_focus = focus_chrome_window()
+        if not ok_focus:
+            print("Não consegui focar automaticamente a janela do Chrome. Tentarei mesmo assim.")
+        # Temporariamente desativa a pausa global para acelerar este fluxo
+        original_pause = pag.PAUSE if HAS_PYAUTO else 0
+        try:
+            if HAS_PYAUTO:
+                pag.PAUSE = 0
+            # Abre 'Exibir código-fonte da página'
+            time.sleep(0.5 + random.uniform(0.4, 0.9))
+            pyautogui.hotkey('ctrl', 'u', _pause=False)
+            time.sleep(1.2 + random.uniform(0.8, 1.5))
+            # Seleciona tudo e copia
+            pyautogui.hotkey('ctrl', 'a', _pause=False)
+            time.sleep(random.uniform(0.2, 0.4))
+            pyautogui.hotkey('ctrl', 'c', _pause=False)
+            # Aguarda clipboard preencher
+            html = ''
+            for _ in range(30):
+                try:
+                    html = clipboard.paste()
+                except Exception:
+                    html = ''
+                if html:
+                    break
+                time.sleep(0.2)
+        finally:
+            if HAS_PYAUTO:
+                pag.PAUSE = original_pause
+        if not html:
+            print("Clipboard vazio ao tentar copiar o HTML. Tentando salvar via diálogo.")
+            # Mantém a aba 'view-source' aberta para não fechar o navegador
+            return save_current_page_html_pyautogui(filename)
+        # Garante diretório
+        try:
+            os.makedirs(os.path.dirname(filename), exist_ok=True)
+        except Exception:
+            pass
+        # Escreve arquivo
+        with open(filename, 'w', encoding='utf-8') as f:
+            f.write(html)
+        print(f"HTML salvo em: {filename}")
+    except KeyboardInterrupt:
+        print("Operação interrompida durante salvamento via clipboard. Tentando método alternativo…")
+        return fetch_current_url_and_save(filename)
+    finally:
+        # Mantém a aba 'view-source' aberta para garantir que o navegador fique aberto
+        pass
+
+
+def get_current_url_via_clipboard() -> str:
+    """Copia a URL atual do Chrome via Ctrl+L e Ctrl+C."""
+    import pyautogui
+    ok_focus = focus_chrome_window()
+    if not ok_focus:
+        print("Não consegui focar automaticamente a janela do Chrome para capturar URL.")
+    original_pause = pag.PAUSE if HAS_PYAUTO else 0
+    try:
+        if HAS_PYAUTO:
+            pag.PAUSE = 0
+        pyautogui.hotkey('ctrl', 'l', _pause=False)
+        time.sleep(random.uniform(0.2, 0.4))
+        pyautogui.hotkey('ctrl', 'c', _pause=False)
+        time.sleep(random.uniform(0.2, 0.4))
+        url = ''
+        for _ in range(10):
+            try:
+                url = clipboard.paste()
+            except Exception:
+                url = ''
+            if url:
+                break
+            time.sleep(0.2)
+        return url
+    finally:
+        if HAS_PYAUTO:
+            pag.PAUSE = original_pause
+
+
+def fetch_current_url_and_save(filename: str):
+    """Usa a URL atual (via clipboard) e salva o HTML com requests."""
+    if not HAS_REQUESTS:
+        print("Biblioteca requests indisponível. Não foi possível salvar via URL.")
+        return False
+    url = get_current_url_via_clipboard()
+    if not url:
+        print("Não foi possível obter a URL atual do navegador.")
+        return False
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+            'Accept-Language': 'pt-BR,pt;q=0.9'
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        with open(filename, 'w', encoding='utf-8', errors='ignore') as f:
+            f.write(resp.text)
+        print(f"HTML salvo via requests em: {filename}")
+        return True
+    except Exception:
+        print("Falha ao salvar via requests.")
+        return False
 
 
 def wait_for_any_selectors(selectors, timeout=20):
@@ -545,6 +701,23 @@ if __name__ == '__main__':
         # Sempre navegar via PyAutoGUI para evitar detecção
         navigate_url_pyautogui(url_busca)
         print("URL atualizada via PyAutoGUI. Verifique os resultados na aba do Chrome.")
+        # Aguarda 5s para garantir carregamento da página antes de salvar
+        time.sleep(5)
+
+        # Salva HTML da página atual localmente
+        base_dir = os.path.join(os.getcwd(), 'pages')
+        os.makedirs(base_dir, exist_ok=True)
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        fname = _sanitize_filename(consulta.strip().lower())
+        full_path = os.path.join(base_dir, f"search_{fname}_{stamp}.html")
+        ok_save = False
+        try:
+            save_current_page_html_via_clipboard(full_path)
+            ok_save = True
+        except Exception:
+            ok_save = False
+        if not ok_save:
+            fetch_current_url_and_save(full_path)
         print("Navegador permanecerá aberto para inspeção.")
     else:
         print("Ok. Você pode tentar novamente no navegador e responder 's' depois.")
