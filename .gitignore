@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.env
+env/
+.venv/
+venv/
+
+# VS Code
+.vscode/
+
+# Logs and caches
+*.log
+.cache/
+tmp/
+temp/
+
+# Selenium artifacts (debug)
+screenshot_*.png
+pagina_*.html
+
+# Local drivers/binaries
+chromedriver.exe
+
+# Outputs
+produtos_catalogo.csv
+produtos_catalogo_*.csv
