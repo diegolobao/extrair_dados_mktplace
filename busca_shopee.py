@@ -5,12 +5,18 @@ import csv
 from urllib.parse import quote
 from dotenv import load_dotenv
 from selenium import webdriver
+try:
+    import undetected_chromedriver as uc
+    HAS_UC = True
+except Exception:
+    HAS_UC = False
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.keys import Keys
 
 # Carrega variáveis de ambiente (.env)
 load_dotenv()
@@ -27,9 +33,18 @@ chrome_options.add_argument('--disable-extensions')
 chrome_options.add_argument('--disable-gpu')
 chrome_options.add_argument('--no-sandbox')
 chrome_options.add_argument('--disable-dev-shm-usage')
+# Reduce automation fingerprint
+chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+chrome_options.add_argument('--window-size=1200,800')
+chrome_options.add_argument('--lang=pt-BR')
+chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36')
 service = Service(executable_path=chromedriver_path)
 
-browser = webdriver.Chrome(service=service, options=chrome_options)
+# Prefer undetected-chromedriver when available
+if HAS_UC:
+    browser = uc.Chrome(options=chrome_options)
+else:
+    browser = webdriver.Chrome(service=service, options=chrome_options)
 wait = WebDriverWait(browser, 20)
 
 
@@ -88,16 +103,36 @@ def login_shopee(email: str, password: str) -> bool:
     user_input.clear(); user_input.send_keys(email)
     pass_input.clear(); pass_input.send_keys(password)
 
-    # Botão de login (heurísticas comuns)
-    btn_selectors = ['button[type="submit"]', 'button._1EApiB', 'button']
-    btn_sel = wait_for_any_selectors(btn_selectors, timeout=5)
-    if btn_sel:
-        try:
-            browser.find_element(By.CSS_SELECTOR, btn_sel).click()
-        except Exception:
-            pass_input.submit()
-    else:
-        pass_input.submit()
+    # Botão de login: tenta pelo texto 'Entrar' e garante que esteja clicável
+    clicked = False
+    try:
+        # Algumas páginas envolvem o texto em spans, então usamos contains(.)
+        btn_xpath = "//button[contains(., 'Entrar')]"
+        login_btn = WebDriverWait(browser, 10).until(
+            EC.element_to_be_clickable((By.XPATH, btn_xpath))
+        )
+        # Aguarda pequeno intervalo para remover 'disabled' dinamicamente
+        time.sleep(0.5)
+        # Clique via JS para evitar interceptação por overlays
+        browser.execute_script("arguments[0].click();", login_btn)
+        clicked = True
+    except Exception:
+        # Fallbacks: tenta seletores comuns ou Enter
+        btn_selectors = ['button[type="submit"]', 'button._1EApiB', 'button']
+        btn_sel = wait_for_any_selectors(btn_selectors, timeout=3)
+        if btn_sel:
+            try:
+                el = browser.find_element(By.CSS_SELECTOR, btn_sel)
+                browser.execute_script("arguments[0].click();", el)
+                clicked = True
+            except Exception:
+                pass
+        if not clicked:
+            try:
+                pass_input.send_keys(Keys.ENTER)
+                clicked = True
+            except Exception:
+                pass
 
     try:
         wait.until(EC.url_contains('shopee.com.br'))
@@ -105,6 +140,13 @@ def login_shopee(email: str, password: str) -> bool:
         return True
     except TimeoutException:
         print(f"Login não confirmado. URL atual: {browser.current_url}")
+        # Human-in-the-loop: aguarda até 120s para resolver CAPTCHA/2FA manualmente
+        print("Se houver verificação/anti-bot, conclua manualmente na janela aberta.")
+        for _ in range(24):
+            time.sleep(5)
+            if 'buyer/login' not in browser.current_url:
+                print("Login confirmado após ação manual.")
+                return True
         return False
 
 
@@ -200,6 +242,8 @@ if __name__ == '__main__':
     try:
         if not login_shopee(EMAIL, PASSWORD):
             raise SystemExit("Falha no login da Shopee.")
+        print("Login confirmado. Aguardando 10 segundos antes da busca…")
+        time.sleep(10)
         termo = "caneta depiladora sobrancelha elétrico"
         resultados = buscar_produto(termo)
         salvar_csv(resultados)
