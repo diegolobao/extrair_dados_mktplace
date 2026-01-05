@@ -2,6 +2,7 @@ import os
 import time
 import re
 import csv
+import random
 from urllib.parse import quote
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -70,71 +71,110 @@ def login_shopee(email: str, password: str) -> bool:
     target_pass = ['input[name="password"]', 'input[type="password"]']
 
     sel_user = wait_for_any_selectors(target_inputs, timeout=15)
-    if not sel_user:
-        # Verifica iframes
-        frames = browser.find_elements(By.TAG_NAME, 'iframe')
-        for frame in frames:
-            try:
-                browser.switch_to.frame(frame)
-                sel_user = wait_for_any_selectors(target_inputs, timeout=5)
-                if sel_user:
-                    break
-                browser.switch_to.default_content()
-            except Exception:
-                browser.switch_to.default_content()
-                continue
+def is_verify_page(url: str) -> bool:
+    return ('/verify/captcha' in url) or ('/verify/traffic' in url)
 
-    if not sel_user:
-        print("Campo de usuário não encontrado.")
-        return False
+def wait_if_verify(max_wait_sec=180):
+    if not is_verify_page(browser.current_url):
+        return
+    print("Shopee apresentou verificação anti-bot. Aguarde/solucione manualmente…")
+    waited = 0
+    while waited < max_wait_sec and is_verify_page(browser.current_url):
+        time.sleep(5)
+        waited += 5
+    print("Verificação concluída ou tempo esgotado. Prosseguindo…")
 
-    # Dentro do contexto atual (pode ser iframe), encontra campos
+def buscar_produto(nome_produto: str):
+    # Usa barra de busca da própria Shopee para reduzir anti-bot
+    print("Abrindo página inicial da Shopee…")
+    browser.get("https://shopee.com.br/")
+    wait_if_verify()
+
+    search_selectors = [
+        'input[placeholder*="Buscar"]',
+        'input[placeholder*="Procure"]',
+        'input[type="search"]',
+        'input'
+    ]
+    sel_search = wait_for_any_selectors(search_selectors, timeout=20)
+    if not sel_search:
+        print("Campo de busca não encontrado.")
+        return []
+
+    query_str = nome_produto
     try:
-        user_input = browser.find_element(By.CSS_SELECTOR, sel_user)
-        pass_sel = wait_for_any_selectors(target_pass, timeout=10)
-        if not pass_sel:
-            print("Campo de senha não encontrado.")
-            return False
-        pass_input = browser.find_element(By.CSS_SELECTOR, pass_sel)
+        search_box = browser.find_element(By.CSS_SELECTOR, sel_search)
+        time.sleep(random.uniform(0.3, 0.8))
+        search_box.clear()
+        for ch in query_str:
+            search_box.send_keys(ch)
+            time.sleep(random.uniform(0.03, 0.12))
+        search_box.send_keys(Keys.ENTER)
     except Exception:
-        print("Falha ao localizar campos de login.")
-        return False
+        # Fallback: navega por URL
+        url = f"https://shopee.com.br/search?keyword={quote(query_str)}&page=0&sortBy=relevancy"
+        browser.get(url)
 
-    user_input.clear(); user_input.send_keys(email)
-    pass_input.clear(); pass_input.send_keys(password)
+    wait_if_verify()
 
-    # Botão de login: tenta pelo texto 'Entrar' e garante que esteja clicável
-    clicked = False
-    try:
-        # Algumas páginas envolvem o texto em spans, então usamos contains(.)
-        btn_xpath = "//button[contains(., 'Entrar')]"
-        login_btn = WebDriverWait(browser, 10).until(
-            EC.element_to_be_clickable((By.XPATH, btn_xpath))
-        )
-        # Aguarda pequeno intervalo para remover 'disabled' dinamicamente
-        time.sleep(0.5)
-        # Clique via JS para evitar interceptação por overlays
-        browser.execute_script("arguments[0].click();", login_btn)
-        clicked = True
-    except Exception:
-        # Fallbacks: tenta seletores comuns ou Enter
-        btn_selectors = ['button[type="submit"]', 'button._1EApiB', 'button']
-        btn_sel = wait_for_any_selectors(btn_selectors, timeout=3)
-        if btn_sel:
-            try:
-                el = browser.find_element(By.CSS_SELECTOR, btn_sel)
-                browser.execute_script("arguments[0].click();", el)
-                clicked = True
-            except Exception:
-                pass
-        if not clicked:
-            try:
-                pass_input.send_keys(Keys.ENTER)
-                clicked = True
-            except Exception:
-                pass
+    # Aguarda itens de resultado
+    item_selectors = [
+        'div.shopee-search-item-result__item',
+        'div[data-sqe="item"]',
+        'div[data-index]'
+    ]
+    sel_item = wait_for_any_selectors(item_selectors, timeout=20)
+    if not sel_item:
+        print("Itens de busca não encontrados.")
+        return []
 
-    try:
+    # Scroll incremental para carregar mais itens
+    for _ in range(5):
+        browser.execute_script('window.scrollBy(0, 800)')
+        time.sleep(random.uniform(0.4, 0.9))
+
+    items = browser.find_elements(By.CSS_SELECTOR, sel_item)
+    resultados = []
+    for it in items:
+        title = ''
+        price = ''
+        try:
+            # Título
+            title_candidates = [
+                '[data-sqe="name"]',
+                'div[data-sqe="name"]',
+                'a',
+                'div'
+            ]
+            for sel in title_candidates:
+                el = it.find_elements(By.CSS_SELECTOR, sel)
+                if el:
+                    txt = el[0].get_attribute('innerText') or el[0].text
+                    if txt and len(txt.strip()) > 0:
+                        title = txt.strip()
+                        break
+            # Preço
+            price_candidates = [
+                '[data-sqe="price"]',
+                'div[data-sqe="price"]',
+                'span',
+                'div'
+            ]
+            for sel in price_candidates:
+                elp = it.find_elements(By.CSS_SELECTOR, sel)
+                if elp:
+                    txtp = elp[0].get_attribute('innerText') or elp[0].text
+                    if txtp and ('R$' in txtp or re.search(r"\d", txtp)):
+                        m = re.search(r"R\$\s*[\d\.,]+", txtp)
+                        price = m.group(0) if m else txtp.strip()
+                        break
+        except Exception:
+            pass
+        if title:
+            resultados.append({'Produto': title, 'Valor': price})
+
+    print(f"Resultados coletados: {len(resultados)}")
+    return resultados
         wait.until(EC.url_contains('shopee.com.br'))
         print("Login Shopee efetuado (ou sessão já ativa).")
         return True
